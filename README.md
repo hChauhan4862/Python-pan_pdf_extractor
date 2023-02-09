@@ -1,8 +1,15 @@
 # Python-pan_pdf_extractor
-A UnOfficial aadhaar pdf data parsing class in Python
+A UnOfficial pan card pdf data parsing class in Python
 
 This is just for Example purpose
 import this file and use the class as you want to use it in your project.
+
+# Features Supported:
+* Extract PAN Card Data from PDF by cracking the password
+* Extract PAN Card Data from PDF by providing the password
+* NSDL PAN Card PDF
+* UTI PAN Card PDF
+* Instant PAN Card PDF
 
 # Usage Example:
 
