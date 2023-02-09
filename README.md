@@ -21,7 +21,7 @@ import this file and use the class as you want to use it in your project.
     EXTRACTED_TEXT = test.get_text()
 
 # BRUTE FORCE:
-It is recommended to use the password if you know it because bruteforce option will take a lot of time to crack the password.
+It is recommended to use the password if you know because bruteforce option will take a lot of time to crack the password.
 So If you don't know the password, and have patience then you can use try brute force method to break it down.
 
 Note: You can improve its response time if you help it recognizing your passowrd by save file with name containing any known part of password like: 
