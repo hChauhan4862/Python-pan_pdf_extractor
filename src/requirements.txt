@@ -1,0 +1,15 @@
+pdfminer.six==20221105
+Pillow==9.4.0
+PyMuPDF==1.21.1
+PyQRCode==1.2.1
+pyzbar==0.1.9
+google-transliteration-api==1.0.3
+requests
+
+# cffi==1.15.1
+# charset-normalizer==3.0.1
+# colorama==0.4.6
+# cryptography==39.0.0
+# qrtools==0.0.2
+# tqdm==4.64.1
+# pycparser==2.21
