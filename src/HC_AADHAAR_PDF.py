@@ -1,246 +1,203 @@
 import os
 import fitz  # pip install --upgrade pip; pip install --upgrade pymupdf
 
+import numpy as np
 from PIL import Image
-from pyzbar.pyzbar import decode # pip install pyzbar
+from pyzbar.pyzbar import decode as QRDecode # pip install pyzbar
 
-from pdfminer.pdfinterp import PDFResourceManager, PDFPageInterpreter
-from pdfminer.converter import TextConverter
-from pdfminer.layout import LAParams
-from pdfminer.pdfpage import PDFPage
-
-from io import StringIO
 import gzip
 import base64
 import re
+from datetime import datetime
+import json
 
-class HC_AADHAAR_PDF:
-    def __init__(self, pdf_path, password = None, bruteForce = False):
-        self.__pdf_path = pdf_path
-        self.__password = password
-        self.__uid = None
-        self.__photo = None
-        self.__address = None
-        self.__mobile = None
-        self.__pdf_text = None
-        self.__QR_TEXT = None
-        self.__QR_DATA = None
-        self.__LOCAL_DATA = None
+class AadhaarPDFJson(object):
+    def __init__(self):
+        self.Photo = None
 
-        if not pdf_path.endswith(".pdf"):
-            raise Exception("Invalid pdf file")
-        
-        try:
-            doc = fitz.Document(pdf_path)
-        except:
-            raise Exception(FileNotFoundError)
-        
-        if not self.__password and bruteForce:
-            self.__bruteforce()
-        
-        if self.__password is not None:
-            doc.authenticate(self.__password)
-        
-        try:
-            PAGE_IMAGE = doc.get_page_images(0)
-        except:
-            if self.__password is None:
-                raise Exception("Password Required")
-            raise Exception("Password Incorrect")
-        
-        if not len(PAGE_IMAGE):
-            raise Exception(FileNotFoundError)
+        self.UID = None
+        self.Name = None
+        self.Gender = None
+        self.Mobile = None
+        self.DOB = None
+        self.CareOf = None
+        # self.CareOfRelation = None
+        self.Locality = None
+        self.VillageTown = None
+        self.PostOffice = None
+        self.SubDistrict = None
+        self.District = None
+        self.State = None
+        self.PinCode = None
+        self.Address = None
+        # self.Photo = None
+        self.IssueDate = None
+        self.DownloadDate = None
 
-        for img in PAGE_IMAGE:
+
+class AadhaarPDF:
+    def __init__(self, pdf_path, password: str = None, bruteForce: bool = False):
+        """
+        pdf_path: Path to the PDF file
+        password: Password to the PDF file
+        bruteForce: If True, brute force the password (default: False)
+        """
+        self.__pdf_path   = pdf_path
+        self.__password   = password
+        self.__bruteForce = bruteForce
+        self.__doc        = None
+        self.__text       = None
+        self.__QR         = None
+        self.__data       = AadhaarPDFJson()
+        self.__date       = None
+
+        assert os.path.exists(self.__pdf_path), "File not found"
+        assert os.path.isfile(self.__pdf_path), "Not a file"
+        assert self.__pdf_path.endswith(".pdf"), "Not a PDF file"
+
+        self.__doc = fitz.Document(pdf_path)
+
+        assert self.__doc.is_pdf, "Not a valid PDF file"
+        
+        # Validate the password
+        if self.__password is not None or self.__bruteForce:
+            self.__authenticate()
+        
+        assert not self.__doc.is_encrypted, "Password is required to open the PDF file"
+
+        images = self.__doc.get_page_images(0)
+
+        assert len(images) != 0, "Not a valid Aadhaar PDF file :: EX001"
+
+        # Extract the images
+        for img in images:
             xref = img[0]
-            pix = fitz.Pixmap(doc, xref)
+            pix = fitz.Pixmap(self.__doc, xref)
             width, height = pix.width, pix.height
-            if width == 160 and height == 200:
-                self.__photo = base64.b64encode(pix.tobytes()).decode("utf-8")
-            elif width == height:
+            if width == 160 and height == 200 and self.__data.Photo is None:       # Phtograph of the Aadhaar holder
+                self.__data.Photo = base64.b64encode(pix.tobytes()).decode("utf-8")
+            elif width == height and self.__QR is None:                  # QR Code Image
                 try:
-                    # decode QR code from pixel map samples
-                    pix.save("temp.png")
-                    decoded = decode(Image.open("temp.png"))
-                    if decoded:
-                        self.__QR_TEXT = decoded[0].data.decode("utf-8")
-                except:
-                    raise Exception("Invalid pdf file")
-                os.remove("temp.png")
+                    self.__QR:str = QRDecode(np.frombuffer(pix.samples, dtype=np.uint8).reshape(height, width, pix.n))[0].data.decode("utf-8")
+                except Exception as e:
+                    # print(e)
+                    pass
+            if self.__data.Photo is not None and self.__QR is not None:
+                break
         
-    def get_text(self):
-        if self.__pdf_text is None:
-            self.__extract_text()
-        
-        return self.__pdf_text
+        self.__text = self.__doc[0].get_text("text")
+
+        assert self.__data.Photo is not None, "Not a valid Aadhaar PDF file :: EX002"
+        assert self.__QR is not None, "Not a valid Aadhaar PDF file :: EX003"
+        assert self.__QR != "", "Not a valid Aadhaar PDF file :: EX004"
+        assert self.__text is not None, "Not a valid Aadhaar PDF file :: EX005"
+        assert re.search(r'UNIQUE[\s]+IDENTIFICATION[\s]+AUTHORITY[\s]+OF[\s]+INDIA',self.__text), "Not a valid Aadhaar PDF file :: EX006"
+
+        self.__date = datetime.strptime(self.__doc.metadata["creationDate"][2:15], "%Y%m%d%H%M%S")
+        self.__doExtract()
+
+    def get_json(self):
+        return json.dumps(dict(self.__data.__dict__))
     
-    def get_json(self, pretty = False, pdf_text = False, photo = True, address = True, local = False):
-        # docstring for local
+    def get(self):
+        return self.__data
+    
+    def get_data(self):
+        return dict(self.__data.__dict__)
+
+    ####################[:START:] EXTRACT AND PARSE DATA ####################
+    def __doExtract(self):
+        self.__parseQRCode()
+        self.__parseText()
+
+    def __parseText(self):
+        TEXT = self.__text
+        aadhaar_number  =   re.findall(r'\d{4}[ ]+\d{4}[ ]+\d{4}', TEXT)
+        address         =   re.search(r'Address([:]?)(.*?)[\d]{6}\n',TEXT, re.DOTALL)
+        mobile          =   re.findall(r'\s[6-9]{1}[0-9]{9}\s',TEXT)
+        allDates        =   re.findall(r'[\d]{2}/[\d]{2}/[\d]{4}', re.sub(re.compile(r'[\s\.]+'),'', TEXT))
+
+        if aadhaar_number and self.__data.UID is None:
+            self.__data.UID = aadhaar_number[0].replace(" ", "")
+        if address:
+            self.__data.Address = address[0].replace("Address", "").replace(":", "").strip()
+        if mobile:
+            self.__data.Mobile  = mobile[0].strip()
+
+        if allDates:
+            DATES = list(set(allDates))
+            DATES = sorted(DATES, key=lambda x: datetime.strptime(x, "%d/%m/%Y"))
+            DATES = [datetime.strptime(x, "%d/%m/%Y").strftime("%Y-%m-%d") for x in DATES]
+            if len(DATES) > 2:
+                self.__data.DOB             = DATES[0]
+                self.__data.IssueDate       = DATES[1]
+                self.__data.DownloadDate    = DATES[2]
+            if len(DATES) == 2:
+                self.__data.DOB             = DATES[0]
+                self.__data.IssueDate       = DATES[1] # Any Download Date is Issue Date
+                self.__data.DownloadDate    = DATES[1]
+
+
+    def __parseQRCode(self):
+        QR_TEXT = self.__QR
+        if QR_TEXT.startswith("<?xml"):
+            self.__data.UID         =  self.__searchBetween(QR_TEXT,'uid="','"').strip()
+            self.__data.Name        =  self.__searchBetween(QR_TEXT,'name="','"').strip()
+            self.__data.DOB         =  self.__searchBetween(QR_TEXT,'dob="','"').strip()
+            self.__data.Gender      =  self.__searchBetween(QR_TEXT,'gender="','"').strip()
+            self.__data.CareOf      =  self.__searchBetween(QR_TEXT,'co="','"').strip()
+            self.__data.Locality    =  self.__searchBetween(QR_TEXT,'loc="','"').strip()
+            self.__data.VillageTown =  self.__searchBetween(QR_TEXT,'vtc="','"').strip()
+            self.__data.PostOffice  =  self.__searchBetween(QR_TEXT,'po="','"').strip()
+            self.__data.SubDistrict =  self.__searchBetween(QR_TEXT,'subdist="','"').strip()
+            self.__data.District    =  self.__searchBetween(QR_TEXT,'dist="','"').strip()
+            self.__data.State       =  self.__searchBetween(QR_TEXT,'state="','"').strip()
+            self.__data.PinCode     =  self.__searchBetween(QR_TEXT,'pc="','"').strip()
+            return True
+        try:
+            BYTES_ARRAY = int(QR_TEXT).to_bytes((int(QR_TEXT).bit_length() + 7) // 8, 'big')
+            DECOMPRESSED_BYTES = gzip.decompress(BYTES_ARRAY)
+            temp =  self.__QR_BYTES_ITER(DECOMPRESSED_BYTES)
+        except:
+            raise Exception("Unsupported QR code version")
+
+        VERSION = next(temp).replace("b'", "")
+        if VERSION not in ["1","2","3","V2"]:
+            raise Exception("Unsupported QR code version")
         
-        if self.__pdf_text is None:
-            self.__extract_text()
-        if self.__QR_DATA is None:
-            self.__extract_qr_data()
-
-        if self.__QR_DATA is None or self.__pdf_text is None:
-            return None
+        MOBILE_EMAIL = VERSION
+        if VERSION == "V2":
+            MOBILE_EMAIL = next(temp)
         
-        if local and self.__LOCAL_DATA is None:
-            try:
-                from google.transliteration import transliterate_word
+        REF_NO = next(temp)
+        NAME = next(temp)
+        DOB = next(temp)
+        GENDER = next(temp)
+        CO = next(temp)
+        DIST = next(temp)
+        LANDMARK = next(temp)
+        HOUSE = next(temp)
+        LOCATION = next(temp)
+        PC = next(temp)
+        PO = next(temp)
+        STATE = next(temp)
+        STREET = next(temp)
+        SUBDIST = next(temp)
+        VTC = next(temp)
 
-                LOCAL = {}  
-                LOCAL["name"] = transliterate_word(self.__QR_DATA["name"], lang_code="hi", max_suggestions=1)[0] if self.__QR_DATA["name"] and self.__QR_DATA["name"]!="" else None
-
-                CO_TYPE = self.__QR_DATA["co"].split(" ") if self.__QR_DATA["co"] and self.__QR_DATA["co"]!="" else []
-                if len(CO_TYPE) == 2:
-                    LOCAL["co"] = CO_TYPE[0] + " " +transliterate_word(CO_TYPE[1], lang_code="hi", max_suggestions=1)[0] if CO_TYPE[1] and CO_TYPE[1]!="" else ""
-                else:
-                    LOCAL["co"] = transliterate_word(self.__QR_DATA["co"], lang_code="hi", max_suggestions=1)[0] if self.__QR_DATA["co"] and self.__QR_DATA["co"]!="" else None
-                LOCAL["loc"] = transliterate_word(self.__QR_DATA["loc"], lang_code="hi", max_suggestions=1)[0] if self.__QR_DATA["loc"] and self.__QR_DATA["loc"]!="" else None
-                LOCAL["vtc"] = transliterate_word(self.__QR_DATA["vtc"], lang_code="hi", max_suggestions=1)[0] if self.__QR_DATA["vtc"] and self.__QR_DATA["vtc"]!="" else None
-                LOCAL["po"] = transliterate_word(self.__QR_DATA["po"], lang_code="hi", max_suggestions=1)[0] if self.__QR_DATA["po"] and self.__QR_DATA["po"]!="" else None
-                LOCAL["dist"] = transliterate_word(self.__QR_DATA["dist"], lang_code="hi", max_suggestions=1)[0] if self.__QR_DATA["dist"] and self.__QR_DATA["dist"]!="" else None
-                LOCAL["subdist"] = transliterate_word(self.__QR_DATA["subdist"], lang_code="hi", max_suggestions=1)[0] if self.__QR_DATA["subdist"] and self.__QR_DATA["subdist"]!="" else None
-                LOCAL["state"] = transliterate_word(self.__QR_DATA["state"], lang_code="hi", max_suggestions=1)[0] if self.__QR_DATA["state"] and self.__QR_DATA["state"]!="" else None
-                if self.__address:
-                    LOCAL["address"] = self.__address.split(" ")[0] + ",".join([
-                        transliterate_word(x, lang_code="hi", max_suggestions=1)[0] for x in  self.__address[len(self.__address.split(" ")[0]):].split(",") if x and x!=""
-                    ])
-
-                self.__LOCAL_DATA = LOCAL
-            except Exception as e:
-                print(e)
-                pass
-
-        
-        
-        DATA = {
-            "uid": self.__uid,
-            "pdf_text": self.__pdf_text if pdf_text else None,
-            **self.__QR_DATA,
-            "mobile": self.__mobile if self.__mobile and self.__mobile !="" else None,
-            "address": self.__address if address else None,
-            "local": self.__LOCAL_DATA if local else None,
-            "photo": self.__photo if photo else None,
-        }
-        
-        if pretty:
-            import json
-            return json.dumps(DATA, indent=4)
-
-        return DATA
-        
-
-    def __extract_text(self):
-        rsrcmgr = PDFResourceManager()
-        retstr = StringIO()
-        codec = 'utf-8'
-        laparams = LAParams()
-        device = TextConverter(rsrcmgr, retstr, codec=codec, laparams=laparams)
-        fp = open(self.__pdf_path, 'rb')
-        interpreter = PDFPageInterpreter(rsrcmgr, device)
-
-        for page in PDFPage.get_pages(fp, pagenos = set(), maxpages=0, password=self.__password,caching=False, check_extractable=False):
-            interpreter.process_page(page)
-
-        self.__pdf_text = retstr.getvalue()
-
-        fp.close()
-        device.close()
-        retstr.close()
-        
-        aadhaar_number = re.findall(r'\d{4}\s+\d{4}\s+\d{4}', self.__pdf_text)
-        if aadhaar_number:
-            self.__uid = aadhaar_number[0].replace(" ", "")
-        
-        # Search text between "Address:" and "\n\n" using regex
-        TXT = re.findall(r'A([\s]*)d([\s]*)d([\s]*)r([\s]*)e([\s]*)s([\s]*)s([\s]*):([\s]*)(.*?)\n\n', self.__pdf_text, re.DOTALL)
-        if TXT:
-            self.__address = TXT[0][8]
-            self.__address = re.sub(r'A([\s]*)d([\s]*)d([\s]*)r([\s]*)e([\s]*)s([\s]*)s([\s]*):([\s]*)', '', self.__address).strip()
-            self.__address = re.sub(r'\s+', ' ', self.__address).strip()
-            self.__address = self.__address.replace("\n", " ")
-
-        # search mobile number
-        MOB = re.findall(r'[\d]{10}', self.__pdf_text)
-        if MOB:
-            self.__mobile = MOB[0]
-
-        # if "Address:" in self.__pdf_text:
-        #     self.__address = self.__pdf_text.split("Address:")[1].split("\n\n")[0].strip().replace("\n", " ")
-
-    def __extract_qr_data(self):
-        if self.__QR_TEXT is None or self.__QR_DATA is not None:
-            return None
-        DATA = {}
-        if self.__QR_TEXT.startswith("<?xml"):
-            import xml.etree.ElementTree as ET
-            root = ET.fromstring(self.__QR_TEXT)
-            # print(root.attrib)
-            DATA["version"] = "XML"
-            DATA["ref_no"] = root.attrib["uid"] if "uid" in root.attrib else None
-            DATA["name"] = root.attrib["name"] if "name" in root.attrib else None
-            DATA["dob"] = root.attrib["dob"].replace("/", "-") if "dob" in root.attrib else None
-            DATA["gender"] = root.attrib["gender"] if "gender" in root.attrib else None
-            DATA["co"] = root.attrib["co"] if "co" in root.attrib else None
-            DATA["loc"] = root.attrib["loc"] if "loc" in root.attrib else None
-            DATA["vtc"] = root.attrib["vtc"] if "vtc" in root.attrib else None
-            DATA["po"] = root.attrib["po"] if "po" in root.attrib else None
-            DATA["dist"] = root.attrib["dist"] if "dist" in root.attrib else None
-            DATA["subdist"] = root.attrib["subdist"] if "subdist" in root.attrib else None
-            DATA["state"] = root.attrib["state"] if "state" in root.attrib else None
-            DATA["pc"] = root.attrib["pc"] if "pc" in root.attrib else None
-        else:
-            try:
-                BYTES_ARRAY = int(self.__QR_TEXT).to_bytes((int(self.__QR_TEXT).bit_length() + 7) // 8, 'big')
-                DECOMPRESSED_BYTES = gzip.decompress(BYTES_ARRAY)
-                temp =  self.__QR_BYTES_ITER(DECOMPRESSED_BYTES)
-            except:
-                return None
-            
-            VERSION = next(temp).replace("b'", "")
-            if VERSION not in ["1","2","3","V2"]:
-                raise Exception("Unsupported QR code version")
-            
-            MOBILE_EMAIL = VERSION
-            if VERSION == "V2":
-                MOBILE_EMAIL = next(temp)
-            
-            REF_NO = next(temp)
-            NAME = next(temp)
-            DOB = next(temp)
-            GENDER = next(temp)
-            CO = next(temp)
-            DIST = next(temp)
-            LANDMARK = next(temp)
-            HOUSE = next(temp)
-            LOCATION = next(temp)
-            PC = next(temp)
-            PO = next(temp)
-            STATE = next(temp)
-            STREET = next(temp)
-            SUBDIST = next(temp)
-            VTC = next(temp)
-
-            DATA["version"] = VERSION
-            DATA["ref_no"] = REF_NO
-            DATA["name"] = NAME
-            DATA["dob"] = DOB
-            DATA["gender"] = GENDER
-            DATA["co"] = CO
-            DATA["loc"] = ", ".join(x for x in [LANDMARK, HOUSE, LOCATION, STREET] if x!="")
-            DATA["vtc"] = VTC
-            DATA["po"] = PO
-            DATA["dist"] = DIST
-            DATA["subdist"] = SUBDIST
-            DATA["state"] = STATE
-            DATA["pc"] = PC
-            DATA["dob"] = DOB
-
-        self.__QR_DATA = DATA
-        return True
-
+        self.__data.Name        = NAME
+        self.__data.DOB         = DOB
+        self.__data.Gender      = GENDER
+        self.__data.CareOf      = CO
+        self.__data.Locality    = ", ".join(x for x in [LANDMARK, HOUSE, LOCATION, STREET] if x!="" and x !='.')
+        self.__data.VillageTown = VTC
+        self.__data.PostOffice  = PO
+        self.__data.District    = DIST
+        self.__data.SubDistrict = SUBDIST
+        self.__data.State       = STATE
+        self.__data.PinCode     = PC
+        self.__data.DOB         = DOB
+    
     def __QR_BYTES_ITER(self, bytes_array):
         STR, OP = '', ''
         for byte in bytes_array:
@@ -249,85 +206,108 @@ class HC_AADHAAR_PDF:
                 yield OP
             else:
                 STR += chr(byte)
+
+    def __searchBetween(self, text, start, end):
+        pattern = f"{start}(.*?){end}"
+        match = re.search(pattern, text, re.DOTALL)
+        return match.group(1) if match else ""
     
+    ####################[:START:] AUTHENTICATE PASSWORD PROTECTED PDF ####################
+    def __authenticate(self):
+        if self.__password is not None and self.__checkPassword(self.__password):
+            return self.__password
+        elif self.__bruteForce:
+            return self.__bruteForcePassword()
+        else:
+            assert False, "Invalid password"
+
+    def __checkPassword(self, password):
+        try:
+            self.__doc.authenticate(password)
+            self.__doc.get_page_images(0)   # Just to check if the password is correct
+            return True
+        except:
+            return False
+
     def __checkPasswordList(self, password_list):
-        doc = fitz.Document(self.__pdf_path)
-        for pwd in password_list:
-            try:
-                doc.authenticate(pwd)
-                doc.get_page_images(0)
-                self.__password = pwd
-                print("Password found: ",pwd)
-                return pwd
-            except:
-                continue
+        for password in password_list:
+            if self.__checkPassword(password):
+                return True
         return False
-    
-    def __bruteforce(self):
-        import datetime
-        doc = fitz.Document(self.__pdf_path)
-        with open("names_list.json", "r") as f:
-            import json
-            NAMES_LIST = json.load(f)
         
+    def __bruteForcePassword(self):
+        # check if the brute force dictionary exists
+        bruteForceDict = "tmp/names_list.json"
+        assert os.path.exists(bruteForceDict), "Brute force dictionary not found"
+        assert os.path.isfile(bruteForceDict), "Brute force dictionary not a file"
+        assert bruteForceDict.endswith(".json"), "Brute force dictionary not a JSON file"
 
-        PASSWORD_LIST = []
-        MAX_YEAR = datetime.datetime.now().year
+        # load the brute force dictionary
+        with open(bruteForceDict, "r") as f:
+            bruteForceDict = json.load(f)
+        
+        # brute force the password
+        PASSWORD_LIST = [] # Blank list to store all the possible passwords to be tried
+
+        MAX_YEAR = datetime.now().year
         MIN_YEAR = MAX_YEAR - 90
-
-        # Extracting password from file name and other patterns
-        FILE_NAME = self.__pdf_path.split("/")[-1].split(".")[0]
+        
+        # Try: Extracting password from file name and other patterns
+        FILE_NAME = re.sub(re.compile(r'[\s]+'),'', ".".join(self.__pdf_path.split("/")[-1].split("."))[:-1]) # remove all whitespaces from the file name
         SIX_DIGITS = re.findall(r'[\d]{6}', FILE_NAME)
         FOUR_DIGITS = re.findall(r'[\d]{4}', FILE_NAME)
         FIRST_FOUR_CHARS = re.findall(r'[a-zA-Z]{4}', FILE_NAME)
         FIRST_THREE_CHARS = re.findall(r'[a-zA-Z]{3}', FILE_NAME)
         FIRST_TWO_CHARS = re.findall(r'[a-zA-Z]{2}', FILE_NAME)
+        FIRST_CHARS = (FIRST_FOUR_CHARS if FIRST_FOUR_CHARS else FIRST_THREE_CHARS if FIRST_THREE_CHARS else FIRST_TWO_CHARS if FIRST_TWO_CHARS else [""])[0].upper()
 
         if SIX_DIGITS:
             PASSWORD_LIST.append(SIX_DIGITS[0])
         
-        pwd = self.__checkPasswordList(PASSWORD_LIST)
-        if pwd: return pwd
-        PASSWORD_LIST = []
-        
-        TEMP_NAME = False
-        if FIRST_FOUR_CHARS or FIRST_THREE_CHARS or FIRST_TWO_CHARS:
-            TEMP_NAME = (FIRST_FOUR_CHARS if FIRST_FOUR_CHARS else FIRST_THREE_CHARS if FIRST_THREE_CHARS else FIRST_TWO_CHARS)[0].upper()
+        if FIRST_CHARS!="":
             if FOUR_DIGITS:
-                PASSWORD_LIST.append(TEMP_NAME+FOUR_DIGITS[0])
-            for Y in range(MAX_YEAR,MIN_YEAR,-1):
-                if FOUR_DIGITS and FOUR_DIGITS[0] == str(Y): continue
-                PASSWORD_LIST.append(TEMP_NAME+str(Y))
+                PASSWORD_LIST.append(FIRST_CHARS + FOUR_DIGITS[0])
+                for Y in range(MAX_YEAR,MIN_YEAR,-1):
+                    if FOUR_DIGITS and FOUR_DIGITS[0] == str(Y): continue
+                    PASSWORD_LIST.append(FIRST_CHARS+str(Y))
         elif FOUR_DIGITS:
-            for name in NAMES_LIST:
-                PASSWORD_LIST.append(name+FOUR_DIGITS[0])
+            for v in bruteForceDict:
+                PASSWORD_LIST.append(v+FOUR_DIGITS[0])
         
-        pwd = self.__checkPasswordList(PASSWORD_LIST)
-        if pwd: return pwd
+        if self.__checkPasswordList(PASSWORD_LIST):
+            return True
+        
+        assert False, "Could not brute force the password"
+
+        # Try: Brute force the password based on the brute force dictionary and Years
         PASSWORD_LIST = []
-        # End Extracting password from file name and other patterns
+        # check if self.__date is less than 04/10/2017
+        # if self.__date < datetime(2017,10,4):
         
-        # Brute force using names and years
-        for name in NAMES_LIST:
-            if TEMP_NAME and name == TEMP_NAME: continue
+        for v in bruteForceDict:
+            if FIRST_CHARS and v == FIRST_CHARS: continue
             for Y in range(MAX_YEAR,MIN_YEAR,-1):
                 if FOUR_DIGITS and FOUR_DIGITS[0] == str(Y): continue
-                PASSWORD_LIST.append(name+str(Y))
+                PASSWORD_LIST.append(v+str(Y))
         
-        pwd = self.__checkPasswordList(PASSWORD_LIST)
-        if pwd: return pwd
+        if self.__checkPasswordList(PASSWORD_LIST):
+            return True
+
+        assert False, "Could not brute force the password"
+
+        # Try: Brute force the password based on the pincodes
         PASSWORD_LIST = []
-        
-        # Brute force using pin codes
         for pc in range(100000,999999):
             PASSWORD_LIST.append(str(pc))
+        
+        if self.__checkPasswordList(PASSWORD_LIST):
+            return True
 
-        pwd = self.__checkPasswordList(PASSWORD_LIST)
-        if pwd: return pwd
-        PASSWORD_LIST = []
-        
-        # MAX = len(PASSWORD_LIST)
-        
+        assert False, "Could not brute force the password"
+    ####################[:END:] AUTHENTICATE PASSWORD PROTECTED PDF ####################
+
+
+
 
 if __name__ == "__main__":
     """
@@ -363,7 +343,8 @@ if __name__ == "__main__":
     import time
     start_time = time.time()
     
-    OBJ = HC_AADHAAR_PDF("e_aadhaar1234567890.pdf", password="XXXX####")
+    with open("e_aadhaar1234567890.pdf", "rb") as f:
+        OBJ = AadhaarPDF(f, password="XXXX####")
 
     print("Time taken: ", time.time()-start_time, "seconds")
 
