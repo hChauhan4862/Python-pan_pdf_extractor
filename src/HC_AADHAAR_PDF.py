@@ -10,6 +10,7 @@ import base64
 import re
 from datetime import datetime
 import json
+import io
 
 class AadhaarPDFJson(object):
     def __init__(self):
@@ -36,75 +37,82 @@ class AadhaarPDFJson(object):
 
 
 class AadhaarPDF:
-    def __init__(self, pdf_path, password: str = None, bruteForce: bool = False):
+    def __init__(self, pdf_file: io.TextIOWrapper, password: str = None, bruteForce: bool = False):
         """
         pdf_path: Path to the PDF file
         password: Password to the PDF file
         bruteForce: If True, brute force the password (default: False)
         """
-        self.__pdf_path   = pdf_path
+        self.__data       = AadhaarPDFJson()
+        self.__pdf_path   = None
         self.__password   = password
         self.__bruteForce = bruteForce
         self.__doc        = None
         self.__text       = None
-        self.__QR         = None
-        self.__data       = AadhaarPDFJson()
         self.__date       = None
+        self.__QR         = None
+        self.__QRVERSION  = None
 
-        assert os.path.exists(self.__pdf_path), "File not found"
-        assert os.path.isfile(self.__pdf_path), "Not a file"
-        assert self.__pdf_path.endswith(".pdf"), "Not a PDF file"
+        self.__doc = fitz.Document(stream=pdf_file.read())
+        try:
+            assert self.__doc.is_pdf, "Not a valid PDF file"
+            self.__pdf_path = pdf_file.name # os.path.abspath(self.__pdf_path)
+            
+            # Validate the password
+            if self.__password is not None or self.__bruteForce:
+                self.__authenticate()
+            
+            assert not self.__doc.is_encrypted, "Password is required to open the PDF file"
 
-        self.__doc = fitz.Document(pdf_path)
+            images = self.__doc.get_page_images(0)
 
-        assert self.__doc.is_pdf, "Not a valid PDF file"
-        
-        # Validate the password
-        if self.__password is not None or self.__bruteForce:
-            self.__authenticate()
-        
-        assert not self.__doc.is_encrypted, "Password is required to open the PDF file"
+            assert len(images) != 0, "Not a valid Aadhaar PDF file :: EX001"
 
-        images = self.__doc.get_page_images(0)
+            # Extract the images
+            for img in images:
+                xref = img[0]
+                pix = fitz.Pixmap(self.__doc, xref)
+                width, height = pix.width, pix.height
+                if width == 160 and height == 200 and self.__data.Photo is None:       # Phtograph of the Aadhaar holder
+                    self.__data.Photo = base64.b64encode(pix.tobytes()).decode("utf-8")
+                elif width == height and self.__QR is None:                  # QR Code Image
+                    try:
+                        self.__QR:str = QRDecode(np.frombuffer(pix.samples, dtype=np.uint8).reshape(height, width, pix.n))[0].data.decode("utf-8")
+                    except Exception as e:
+                        # print(e)
+                        pass
+                if self.__data.Photo is not None and self.__QR is not None:
+                    break
+            
+            self.__text = self.__doc[0].get_text("text")
 
-        assert len(images) != 0, "Not a valid Aadhaar PDF file :: EX001"
+            assert self.__data.Photo is not None, "Not a valid Aadhaar PDF file :: EX002"
+            assert self.__QR is not None, "Not a valid Aadhaar PDF file :: EX003"
+            assert self.__QR != "", "Not a valid Aadhaar PDF file :: EX004"
+            assert self.__text is not None, "Not a valid Aadhaar PDF file :: EX005"
+            assert re.search(r'UNIQUE[\s]+IDENTIFICATION[\s]+AUTHORITY[\s]+OF[\s]+INDIA',self.__text), "Not a valid Aadhaar PDF file :: EX006"
 
-        # Extract the images
-        for img in images:
-            xref = img[0]
-            pix = fitz.Pixmap(self.__doc, xref)
-            width, height = pix.width, pix.height
-            if width == 160 and height == 200 and self.__data.Photo is None:       # Phtograph of the Aadhaar holder
-                self.__data.Photo = base64.b64encode(pix.tobytes()).decode("utf-8")
-            elif width == height and self.__QR is None:                  # QR Code Image
-                try:
-                    self.__QR:str = QRDecode(np.frombuffer(pix.samples, dtype=np.uint8).reshape(height, width, pix.n))[0].data.decode("utf-8")
-                except Exception as e:
-                    # print(e)
-                    pass
-            if self.__data.Photo is not None and self.__QR is not None:
-                break
-        
-        self.__text = self.__doc[0].get_text("text")
+            self.__date = datetime.strptime(self.__doc.metadata["creationDate"][2:15], "%Y%m%d%H%M%S")
+            self.__doExtract()
 
-        assert self.__data.Photo is not None, "Not a valid Aadhaar PDF file :: EX002"
-        assert self.__QR is not None, "Not a valid Aadhaar PDF file :: EX003"
-        assert self.__QR != "", "Not a valid Aadhaar PDF file :: EX004"
-        assert self.__text is not None, "Not a valid Aadhaar PDF file :: EX005"
-        assert re.search(r'UNIQUE[\s]+IDENTIFICATION[\s]+AUTHORITY[\s]+OF[\s]+INDIA',self.__text), "Not a valid Aadhaar PDF file :: EX006"
-
-        self.__date = datetime.strptime(self.__doc.metadata["creationDate"][2:15], "%Y%m%d%H%M%S")
-        self.__doExtract()
+            self.__doc.close()
+        except AssertionError as e:
+            # close the document if it is open
+            self.__doc.close()
+            raise e
 
     def get_json(self):
         return json.dumps(dict(self.__data.__dict__))
     
     def get(self):
         return self.__data
-    
+        
     def get_data(self):
         return dict(self.__data.__dict__)
 
+    def close(self):
+        self.__doc.close()
+    
     ####################[:START:] EXTRACT AND PARSE DATA ####################
     def __doExtract(self):
         self.__parseQRCode()
@@ -136,11 +144,21 @@ class AadhaarPDF:
                 self.__data.DOB             = DATES[0]
                 self.__data.IssueDate       = DATES[1] # Any Download Date is Issue Date
                 self.__data.DownloadDate    = DATES[1]
-
+        
+        if self.__QRVERSION == "XML2.0":               # for some aadhaar card issued in 2018
+            t = self.__data.Address.replace("\n", "").split(",")
+            print(t)
+            assert len(t) >= 3, "Not a valid Aadhaar PDF file :: EX007"
+            self.__data.CareOf      = t[0].strip()
+            self.__data.State       = t[-1].split("-")[0].strip()
+            self.__data.PinCode     = t[-1].split("-")[1].strip()
+            self.__data.District    = t[-2].strip()
+            self.__data.Locality    = ", ".join(t[1:-2]).strip()
 
     def __parseQRCode(self):
         QR_TEXT = self.__QR
         if QR_TEXT.startswith("<?xml"):
+            self.__QRVERSION = "XML"
             self.__data.UID         =  self.__searchBetween(QR_TEXT,'uid="','"').strip()
             self.__data.Name        =  self.__searchBetween(QR_TEXT,'name="','"').strip()
             self.__data.DOB         =  self.__searchBetween(QR_TEXT,'dob="','"').strip()
@@ -154,6 +172,15 @@ class AadhaarPDF:
             self.__data.State       =  self.__searchBetween(QR_TEXT,'state="','"').strip()
             self.__data.PinCode     =  self.__searchBetween(QR_TEXT,'pc="','"').strip()
             return True
+        if QR_TEXT.startswith("<QDA"):  # for 2018 PDFs
+            self.__QRVERSION = "XML2.0"
+            self.__data.Name        =  self.__searchBetween(QR_TEXT,'n="','"').strip()
+            self.__data.Gender      =  self.__searchBetween(QR_TEXT,'g="','"').strip()
+            self.__data.DOB         =  self.__searchBetween(QR_TEXT,'d="','"').strip()
+            return True
+        
+        # V2 QR Code
+        self.__QRVERSION = "V2"
         try:
             BYTES_ARRAY = int(QR_TEXT).to_bytes((int(QR_TEXT).bit_length() + 7) // 8, 'big')
             DECOMPRESSED_BYTES = gzip.decompress(BYTES_ARRAY)
@@ -253,13 +280,14 @@ class AadhaarPDF:
         MIN_YEAR = MAX_YEAR - 90
         
         # Try: Extracting password from file name and other patterns
-        FILE_NAME = re.sub(re.compile(r'[\s]+'),'', ".".join(self.__pdf_path.split("/")[-1].split("."))[:-1]) # remove all whitespaces from the file name
+        FILE_NAME = re.sub(re.compile(r'[\s]+'),'', ".".join(self.__pdf_path.split("/")[-1].split("."))[:-1]).upper() # remove all whitespaces from the file name
         SIX_DIGITS = re.findall(r'[\d]{6}', FILE_NAME)
         FOUR_DIGITS = re.findall(r'[\d]{4}', FILE_NAME)
-        FIRST_FOUR_CHARS = re.findall(r'[a-zA-Z]{4}', FILE_NAME)
-        FIRST_THREE_CHARS = re.findall(r'[a-zA-Z]{3}', FILE_NAME)
-        FIRST_TWO_CHARS = re.findall(r'[a-zA-Z]{2}', FILE_NAME)
-        FIRST_CHARS = (FIRST_FOUR_CHARS if FIRST_FOUR_CHARS else FIRST_THREE_CHARS if FIRST_THREE_CHARS else FIRST_TWO_CHARS if FIRST_TWO_CHARS else [""])[0].upper()
+        FIRST_FOUR_CHARS = re.findall(r'([A-Z]{2}\.[A-Z])|([A-Z]{4})', FILE_NAME)
+        FIRST_THREE_CHARS = re.findall(r'[A-Z]{3}', FILE_NAME)
+        FIRST_TWO_CHARS = re.findall(r'[A-Z]{2}', FILE_NAME)
+        FIRST_FOUR_CHARS = FIRST_FOUR_CHARS[0] if FIRST_FOUR_CHARS else None
+        FIRST_CHARS = (FIRST_FOUR_CHARS if FIRST_FOUR_CHARS else FIRST_THREE_CHARS if FIRST_THREE_CHARS else FIRST_TWO_CHARS if FIRST_TWO_CHARS else [""])[0]
 
         if SIX_DIGITS:
             PASSWORD_LIST.append(SIX_DIGITS[0])
@@ -277,7 +305,7 @@ class AadhaarPDF:
         if self.__checkPasswordList(PASSWORD_LIST):
             return True
         
-        assert False, "Could not brute force the password"
+        # assert False, "Could not brute force the password"
 
         # Try: Brute force the password based on the brute force dictionary and Years
         PASSWORD_LIST = []
@@ -293,7 +321,7 @@ class AadhaarPDF:
         if self.__checkPasswordList(PASSWORD_LIST):
             return True
 
-        assert False, "Could not brute force the password"
+        # assert False, "Could not brute force the password"
 
         # Try: Brute force the password based on the pincodes
         PASSWORD_LIST = []
