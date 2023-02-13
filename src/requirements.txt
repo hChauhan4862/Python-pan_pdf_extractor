@@ -1,10 +1,11 @@
-pdfminer.six==20221105
-Pillow==9.4.0
+# pdfminer.six==20221105
+# Pillow==9.4.0
 PyMuPDF==1.21.1
-PyQRCode==1.2.1
+# PyQRCode==1.2.1
 pyzbar==0.1.9
-google-transliteration-api==1.0.3
+# google-transliteration-api==1.0.3
 requests
+numpy
 
 # cffi==1.15.1
 # charset-normalizer==3.0.1

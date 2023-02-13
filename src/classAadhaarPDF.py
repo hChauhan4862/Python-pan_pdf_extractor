@@ -2,7 +2,6 @@ import os
 import fitz  # pip install --upgrade pip; pip install --upgrade pymupdf
 
 import numpy as np
-from PIL import Image
 from pyzbar.pyzbar import decode as QRDecode # pip install pyzbar
 
 import gzip
@@ -54,52 +53,48 @@ class AadhaarPDF:
         self.__QRVERSION  = None
 
         self.__doc = fitz.Document(stream=pdf_file.read())
-        try:
-            assert self.__doc.is_pdf, "Not a valid PDF file"
-            self.__pdf_path = pdf_file.name # os.path.abspath(self.__pdf_path)
-            
-            # Validate the password
-            if self.__password is not None or self.__bruteForce:
-                self.__authenticate()
-            
-            assert not self.__doc.is_encrypted, "Password is required to open the PDF file"
 
-            images = self.__doc.get_page_images(0)
+        assert self.__doc.is_pdf, "Not a valid PDF file"
+        self.__pdf_path = pdf_file.name # os.path.abspath(self.__pdf_path)
+        # print(self.__doc._getMetadata("CreationDate"))
+        
+        # Validate the password
+        if self.__password is not None or self.__bruteForce:
+            self.__authenticate()
+        
+        assert not self.__doc.is_encrypted, "Password is required to open the PDF file"
 
-            assert len(images) != 0, "Not a valid Aadhaar PDF file :: EX001"
+        images = self.__doc.get_page_images(0)
 
-            # Extract the images
-            for img in images:
-                xref = img[0]
-                pix = fitz.Pixmap(self.__doc, xref)
-                width, height = pix.width, pix.height
-                if width == 160 and height == 200 and self.__data.Photo is None:       # Phtograph of the Aadhaar holder
-                    self.__data.Photo = base64.b64encode(pix.tobytes()).decode("utf-8")
-                elif width == height and self.__QR is None:                  # QR Code Image
-                    try:
-                        self.__QR:str = QRDecode(np.frombuffer(pix.samples, dtype=np.uint8).reshape(height, width, pix.n))[0].data.decode("utf-8")
-                    except Exception as e:
-                        # print(e)
-                        pass
-                if self.__data.Photo is not None and self.__QR is not None:
-                    break
-            
-            self.__text = self.__doc[0].get_text("text")
+        assert len(images) != 0, "Not a valid Aadhaar PDF file :: EX001"
 
-            assert self.__data.Photo is not None, "Not a valid Aadhaar PDF file :: EX002"
-            assert self.__QR is not None, "Not a valid Aadhaar PDF file :: EX003"
-            assert self.__QR != "", "Not a valid Aadhaar PDF file :: EX004"
-            assert self.__text is not None, "Not a valid Aadhaar PDF file :: EX005"
-            assert re.search(r'UNIQUE[\s]+IDENTIFICATION[\s]+AUTHORITY[\s]+OF[\s]+INDIA',self.__text), "Not a valid Aadhaar PDF file :: EX006"
+        # Extract the images
+        for img in images:
+            xref = img[0]
+            pix = fitz.Pixmap(self.__doc, xref)
+            width, height = pix.width, pix.height
+            if width == 160 and height == 200 and self.__data.Photo is None:       # Phtograph of the Aadhaar holder
+                self.__data.Photo = base64.b64encode(pix.tobytes()).decode("utf-8")
+            elif width == height and self.__QR is None:                  # QR Code Image
+                try:
+                    self.__QR:str = QRDecode(np.frombuffer(pix.samples, dtype=np.uint8).reshape(height, width, pix.n))[0].data.decode("utf-8")
+                except Exception as e:
+                    # print(e)
+                    pass
+            if self.__data.Photo is not None and self.__QR is not None:
+                break
+        
+        self.__text = self.__doc[0].get_text("text")
 
-            self.__date = datetime.strptime(self.__doc.metadata["creationDate"][2:15], "%Y%m%d%H%M%S")
-            self.__doExtract()
+        assert self.__data.Photo is not None, "Not a valid Aadhaar PDF file :: EX002"
+        assert self.__QR is not None, "Not a valid Aadhaar PDF file :: EX003"
+        assert self.__QR != "", "Not a valid Aadhaar PDF file :: EX004"
+        assert self.__text is not None, "Not a valid Aadhaar PDF file :: EX005"
+        # print(self.__text)
+        assert re.search(r'(UNIQUE[\s]+IDENTIFICATION[\s]+AUTHORITY[\s]+OF[\s]+INDIA)|(E_Aadhaar_UIDAI)',self.__text), "Not a valid Aadhaar PDF file :: EX006"
 
-            self.__doc.close()
-        except AssertionError as e:
-            # close the document if it is open
-            self.__doc.close()
-            raise e
+        self.__date = datetime.strptime(self.__doc.metadata["creationDate"][2:15], "%Y%m%d%H%M%S")
+        self.__doExtract()
 
     def get_json(self):
         return json.dumps(dict(self.__data.__dict__))
@@ -109,9 +104,6 @@ class AadhaarPDF:
         
     def get_data(self):
         return dict(self.__data.__dict__)
-
-    def close(self):
-        self.__doc.close()
     
     ####################[:START:] EXTRACT AND PARSE DATA ####################
     def __doExtract(self):
@@ -147,7 +139,6 @@ class AadhaarPDF:
         
         if self.__QRVERSION == "XML2.0":               # for some aadhaar card issued in 2018
             t = self.__data.Address.replace("\n", "").split(",")
-            print(t)
             assert len(t) >= 3, "Not a valid Aadhaar PDF file :: EX007"
             self.__data.CareOf      = t[0].strip()
             self.__data.State       = t[-1].split("-")[0].strip()
@@ -172,7 +163,7 @@ class AadhaarPDF:
             self.__data.State       =  self.__searchBetween(QR_TEXT,'state="','"').strip()
             self.__data.PinCode     =  self.__searchBetween(QR_TEXT,'pc="','"').strip()
             return True
-        if QR_TEXT.startswith("<QDA"):  # for 2018 PDFs
+        if QR_TEXT.startswith("<QDA") or QR_TEXT.startswith("<QDB"):  # for 2018 PDFs
             self.__QRVERSION = "XML2.0"
             self.__data.Name        =  self.__searchBetween(QR_TEXT,'n="','"').strip()
             self.__data.Gender      =  self.__searchBetween(QR_TEXT,'g="','"').strip()
@@ -186,11 +177,12 @@ class AadhaarPDF:
             DECOMPRESSED_BYTES = gzip.decompress(BYTES_ARRAY)
             temp =  self.__QR_BYTES_ITER(DECOMPRESSED_BYTES)
         except:
-            raise Exception("Unsupported QR code version")
+            # print(self.__QR)
+            raise Exception("Unsupported QR code version :: EX001")
 
         VERSION = next(temp).replace("b'", "")
         if VERSION not in ["1","2","3","V2"]:
-            raise Exception("Unsupported QR code version")
+            raise Exception("Unsupported QR code version :: EX002")
         
         MOBILE_EMAIL = VERSION
         if VERSION == "V2":
@@ -287,6 +279,8 @@ class AadhaarPDF:
         FIRST_THREE_CHARS = re.findall(r'[A-Z]{3}', FILE_NAME)
         FIRST_TWO_CHARS = re.findall(r'[A-Z]{2}', FILE_NAME)
         FIRST_FOUR_CHARS = FIRST_FOUR_CHARS[0] if FIRST_FOUR_CHARS else None
+        
+        FIRST_FOUR_CHARS = list(filter(None, FIRST_FOUR_CHARS)) if FIRST_FOUR_CHARS else None
         FIRST_CHARS = (FIRST_FOUR_CHARS if FIRST_FOUR_CHARS else FIRST_THREE_CHARS if FIRST_THREE_CHARS else FIRST_TWO_CHARS if FIRST_TWO_CHARS else [""])[0]
 
         if SIX_DIGITS:
@@ -295,11 +289,12 @@ class AadhaarPDF:
         if FIRST_CHARS!="":
             if FOUR_DIGITS:
                 PASSWORD_LIST.append(FIRST_CHARS + FOUR_DIGITS[0])
-                for Y in range(MAX_YEAR,MIN_YEAR,-1):
-                    if FOUR_DIGITS and FOUR_DIGITS[0] == str(Y): continue
-                    PASSWORD_LIST.append(FIRST_CHARS+str(Y))
-        elif FOUR_DIGITS:
+            for Y in range(MAX_YEAR,MIN_YEAR,-1):
+                if FOUR_DIGITS and FOUR_DIGITS[0] == str(Y): continue
+                PASSWORD_LIST.append(FIRST_CHARS+str(Y))
+        if FOUR_DIGITS:
             for v in bruteForceDict:
+                if FOUR_DIGITS and FOUR_DIGITS[0] == str(Y) and FIRST_CHARS==v: continue
                 PASSWORD_LIST.append(v+FOUR_DIGITS[0])
         
         if self.__checkPasswordList(PASSWORD_LIST):
@@ -335,8 +330,6 @@ class AadhaarPDF:
     ####################[:END:] AUTHENTICATE PASSWORD PROTECTED PDF ####################
 
 
-
-
 if __name__ == "__main__":
     """
         This is just for Example purpose
@@ -344,13 +337,13 @@ if __name__ == "__main__":
 
         Example:
             from HC_AADHAAR_PDF import HC_AADHAAR_PDF
-            test = HC_AADHAAR_PDF("e_aadhaar1234567890.pdf", password="XXXX####")
+            test = HC_AADHAAR_PDF(fileObject, password="XXXX####")
             JSON_DATA = test.get_json()
             EXTRACTED_TEXT = test.get_text()
         
         Example 2:
             from HC_AADHAAR_PDF import HC_AADHAAR_PDF
-            test = HC_AADHAAR_PDF("e_aadhaar1234567890.pdf", bruteForce=True)
+            test = HC_AADHAAR_PDF(fileObject, bruteForce=True)
             JSON_DATA = test.get_json()
             EXTRACTED_TEXT = test.get_text()
         
