@@ -113,14 +113,14 @@ class AadhaarPDF:
     def __parseText(self):
         TEXT = self.__text
         aadhaar_number  =   re.findall(r'\d{4}[ ]+\d{4}[ ]+\d{4}', TEXT)
-        address         =   re.search(r'Address([:]?)(.*?)[\d]{6}\n',TEXT, re.DOTALL)
+        address         =   re.search(r'Addre[\s]*ss([:]?)(.*?)[\d]{6}\n',TEXT, re.DOTALL)
         mobile          =   re.findall(r'\s[6-9]{1}[0-9]{9}\s',TEXT)
         allDates        =   re.findall(r'[\d]{2}/[\d]{2}/[\d]{4}', re.sub(re.compile(r'[\s\.]+'),'', TEXT))
 
         if aadhaar_number and self.__data.UID is None:
             self.__data.UID = aadhaar_number[0].replace(" ", "")
         if address:
-            self.__data.Address = address[0].replace("Address", "").replace(":", "").strip()
+            self.__data.Address = re.sub("Addre[\s]*ss([:]?)([\n]?)", "", address[0])
         if mobile:
             self.__data.Mobile  = mobile[0].strip()
 
@@ -273,8 +273,9 @@ class AadhaarPDF:
         
         # Try: Extracting password from file name and other patterns
         FILE_NAME = re.sub(re.compile(r'[\s]+'),'', ".".join(self.__pdf_path.split("/")[-1].split("."))[:-1]).upper() # remove all whitespaces from the file name
-        SIX_DIGITS = re.findall(r'[\d]{6}', FILE_NAME)
-        FOUR_DIGITS = re.findall(r'[\d]{4}', FILE_NAME)
+        FILE_NAME2 = ".".join(self.__pdf_path.split("/")[-1].split(".")[:-1]).upper() # 
+        SIX_DIGITS = re.findall(r'[\d]{6}', FILE_NAME2)
+        FOUR_DIGITS = re.findall(r'[\d]{4}', FILE_NAME2)
         FIRST_FOUR_CHARS = re.findall(r'([A-Z]{2}\.[A-Z])|([A-Z]{4})', FILE_NAME)
         FIRST_THREE_CHARS = re.findall(r'[A-Z]{3}', FILE_NAME)
         FIRST_TWO_CHARS = re.findall(r'[A-Z]{2}', FILE_NAME)
@@ -289,12 +290,11 @@ class AadhaarPDF:
         if FIRST_CHARS!="":
             if FOUR_DIGITS:
                 PASSWORD_LIST.append(FIRST_CHARS + FOUR_DIGITS[0])
-            for Y in range(MAX_YEAR,MIN_YEAR,-1):
-                if FOUR_DIGITS and FOUR_DIGITS[0] == str(Y): continue
-                PASSWORD_LIST.append(FIRST_CHARS+str(Y))
-        if FOUR_DIGITS:
+                for Y in range(MAX_YEAR,MIN_YEAR,-1):
+                    if FOUR_DIGITS and FOUR_DIGITS[0] == str(Y): continue
+                    PASSWORD_LIST.append(FIRST_CHARS+str(Y))
+        elif FOUR_DIGITS:
             for v in bruteForceDict:
-                if FOUR_DIGITS and FOUR_DIGITS[0] == str(Y) and FIRST_CHARS==v: continue
                 PASSWORD_LIST.append(v+FOUR_DIGITS[0])
         
         if self.__checkPasswordList(PASSWORD_LIST):
