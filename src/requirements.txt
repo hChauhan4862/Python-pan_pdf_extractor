@@ -3,7 +3,6 @@ pyzbar==0.1.9
 requests
 numpy
 
-
 # pdfminer.six==20221105
 # Pillow==9.4.0
 # PyQRCode==1.2.1

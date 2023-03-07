@@ -2,7 +2,7 @@ import os
 import fitz  # pip install --upgrade pip; pip install --upgrade pymupdf
 
 import numpy as np
-from pyzbar.pyzbar import decode as QRDecode # pip install pyzbar
+from pyzbar.pyzbar import decode as QRDecode
 
 import gzip
 import base64
@@ -365,7 +365,7 @@ if __name__ == "__main__":
     start_time = time.time()
     
     with open("e_aadhaar1234567890.pdf", "rb") as f:
-        OBJ = AadhaarPDF(f, password="XXXX####")
+        OBJ = AadhaarPDF(f, password="XXXX####", bruteForce=True)
 
     print("Time taken: ", time.time()-start_time, "seconds")
 
