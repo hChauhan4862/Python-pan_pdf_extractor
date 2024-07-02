@@ -38,7 +38,10 @@ Pin code for older aadhaar card format
     1990.pdf        # Only year of birth is known
     123456.pdf      # pin code is known (for older aadhaar card format)
 
-
+.
+.
+.
+.
 
 ## Python Pan Card PDF Data Parser
 A UnOfficial pan card pdf data parsing class in Python
