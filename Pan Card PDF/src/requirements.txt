@@ -1,0 +1,6 @@
+pdfminer.six==20221105
+PyMuPDF==1.21.1
+PyQRCode==1.2.1
+pyzbar==0.1.9
+google-transliteration-api==1.0.3
+requests
